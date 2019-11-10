@@ -5,7 +5,7 @@ Description: >
 
 # Notes:
 # 1. RDS BackupRetentionPeriod is set to 0 which disables automated backups/snapshots as opposed to backup.
-# 2. RDS deletion policy is set to delete as opposed to take snapshot.
+# 2. RDS deletion policy is set to delete as opposed to take snapshot during rollback or stack deletion.
 
 Parameters:
 
@@ -130,6 +130,11 @@ Resources:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
       InstanceType: !FindInMap [InstanceSize, !Ref EnvironmentSize, EC2]
       KeyName: !Ref EC2KeyPair
+      SecurityGroupIds: !Ref EC2SecurityGroupId
+      SubnetId: !Ref EC2SubnetId
+      Tags:
+        - Key: Name
+          Value: MyEC2
       UserData:
         "Fn::Base64": # The intrinsic function converts an input string to Base64 and passes the commands to EC2.
           !Sub | # pipe allows you to use multi line strings
@@ -229,6 +234,7 @@ Resources:
                     cwd: "/var/www/html/wordpress"
                     command: !Sub |
                       sed -i 's/password_here/${DatabasePassword}/g' wp-config.php
+                      
   S3:
     Type: "AWS::S3::Bucket"
     DeletionPolicy: Delete # Default is delete
