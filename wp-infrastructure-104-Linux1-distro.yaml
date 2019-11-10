@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  A simple template intended to be run in Sydney (ap-southeast-2) with a Linux (1) distro
+  Creates EC2, RDS MySQL based on the environment size input parameter and S3 bucket in ap-southeast-2 (Sydney)
+  Installs and configures wordpress in the EC2 instance based on CloudformanationInit and metadata
+  RDS BackupRetentionPeriod is set to 0 which disables automated backups/snapshots
+
+  Parameters:
+
+  EnvironmentSize: # logical name
+    Type: String
+    Default: SMALL
+    AllowedValues:
+      - SMALL
+      - MEDIUM
+      - LARGE
+    Description: Select the environment size
+
+  EC2InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues: 
+      - t2.micro
+      - m1.small
+      - m1.large
+    Description: Enter t2.micro, m1.small, or m1.large. Default is t2.micro.
+
+  EC2KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Select the keypair for EC2
+
+  EC2SecurityGroupId:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Select the Security Group Id for EC2
+
+  EC2SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select the Subnet Ids for EC2
+
+  AZ:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-southeast-2a
+    Description: Enter the AZ for EC2 and RDS DB instance
+
+  DBSubnetId:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select atleast two Subnet Ids for RDS
+  
+  DBSecurityGroupId:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Select the Security Group Id for RDS
+
+  DatabaseName:
+    Type: String
+    Default: wordpress
+
+  DatabaseUser:
+    Type: String
+    Description: Enter user name for RDS instance
+    MinLength: 6
+    MaxLength: 41
+    AllowedPattern: ^[a-zA-Z0-9]*$
+    ConstraintDescription: Must contain from 8 to 41 alphanumeric character and should be ^[a-zA-Z0-9]*$
+
+  DatabasePassword:
+    Type: String
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: ^[a-zA-Z0-9]*$
+    ConstraintDescription: Must contain from 8 to 41 alphanumeric character and should be ^[a-zA-Z0-9]*$
+    NoEcho: true
+
+Mappings:
+  
+  RegionMap: # logical name
+    us-east1:
+      AMI: ami-03587fa4048e9eb92
+    ap-southeast-1:
+      AMI: ami-04a2d6660f1296314
+    ap-southeast-2:
+      AMI: ami-07cc15c3ba6f8e287
+
+  InstanceSize:
+    SMALL:
+      EC2: t2.micro
+      DB: db.t2.micro
+    MEDIUM:
+      EC2: t2.small
+      DB: db.t2.small
+    LARGE:
+      EC2: t2.large
+      DB: db.t2.large
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: The description for the DB Subnet Group
+      DBSubnetGroupName: DBSubnetgroup
+      SubnetIds: !Ref DBSubnetId
+      Tags: 
+        - Key: Name
+          Value: myDBSubnetgroup
+
+  DB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AvailabilityZone: !Ref AZ
+      AllocatedStorage: 5
+      StorageType: gp2
+      DBInstanceClass: !FindInMap [InstanceSize, !Ref EnvironmentSize, DB]
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: !Ref DBSecurityGroupId
+      DBName: !Ref DatabaseName
+      Engine: MySQL
+      MasterUsername: !Ref DatabaseUser
+      MasterUserPassword: !Ref DatabasePassword
+      BackupRetentionPeriod: 0 # Setting this parameter to 0 disables automated backups.
+      # DeleteAutomatedBackups: A value that indicates whether to remove automated backups 
+      # immediately after the DB instance is deleted. This parameter isn't case-sensitive. 
+      # The default is to remove automated backups immediately after the DB instance is deleted.
+
+  EC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Ref AZ
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: !FindInMap [InstanceSize, !Ref EnvironmentSize, EC2]
+      KeyName: !Ref EC2KeyPair
+      UserData:
+        "Fn::Base64": # The intrinsic function converts an input string to Base64 and passes the commands to EC2.
+          !Sub | # pipe allows you to use multi line strings
+            #!/bin/bash
+            yum update -y aws-cfn-bootstrap
+            # update aws cfn bootstrap package which contains utilities to bootstrap an instance using 
+            # cfninit and cfnhup processes. Always a best practice to update it as step1
+            
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2 --configsets wordpress --region ${AWS::Region}
+            # cfn-init runs configsets wordpress on EC2 resource in the stack and region as mentioned
+            # It will poll the metadata for the resource.
+            # Will implement the desired state on the resource defined by the metadata and it will exit by success or failure stat
+
+            yum -y update
+      Metadata:
+        AWS::Cloudformation::Init:
+          configsets:
+            wordpress:
+              - "configure_cfn"
+              - "install_wordpress"
+              - "config_wordpress"
+          configure_cfn:
+          files:
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+            # The user actions that the cfn-hup daemon calls periodically are defined in the hooks.conf configuration file.
+            # By default, the cfn-hup daemon runs every 15 minutes, so it may take up to 15 minutes for the 
+            # application to change once the stack has been updated. but we have defined 5 minutes.
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.EC2.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2 --configsets wordpress --region ${AWS::Region}
+              # Whenever the stack is updated, run the action: re-run the cfn-init command and 
+              # reapply the desired state as indicated by the wordpress config set.
+              mode: "000400"
+              owner: root
+              group: root
+            /etc/cfn/cfn-hup.conf:
+            # The cfn-hup helper is a daemon that detects changes in resource metadata and runs user-specified actions 
+            # when a change is detected. This allows you to make configuration updates on your running Amazon EC2 
+            # instances through the UpdateStack API action.
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                verbose=true
+                interval=5
+              mode: "000400"
+              owner: root
+              group: root
+            /var/www/html/index2.html:
+              content: !Ref TestString
+              # Create index2.html file and copy the teststring input param from CFN template
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                # directs the sysvinit process to ensure cfn-hup process both enabled and set to startup. 
+                # If any of these files have changed, cfn-hup is restarted.
+                files:
+                  - "/etc/cfn/cfn-hup.conf"
+                  - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+        install_wordpress:
+          packages:
+            yum:
+              httpd: []
+              php: []
+              mysql: []
+              php-mysql: []
+          sources:
+            /var/www/html: "http://wordpress.org/latest.tar.gz"
+          services:
+            sysvinit:
+              httpd:
+                enabled: "true"
+                ensureRunning: "true"
+        config_wordpress:
+          commands:
+            01_clone_config:
+              cwd: "/var/www/html/wordpress"
+              test: "test ! -e /var/www/html/wordpress/wp-config.php"
+              command: "cp wp-config-sample.php wp-config.php"
+            02_inject_dbhost:
+              cwd: "/var/www/html/wordpress"
+              command: !Sub |
+                sed -i 's/localhost/${DB.Endpoint.Address}/g' wp-config.php
+            03_inject_dbname:
+              cwd: "/var/www/html/wordpress"
+              command: !Sub |
+                sed -i 's/database_name_here/${DatabaseName}/g' wp-config.php
+            04_inject_dbuser:
+              cwd: "/var/www/html/wordpress"
+              command: !Sub |
+                sed -i 's/username_here/${DatabaseUser}/g' wp-config.php
+            05_inject_dbpassword:
+              cwd: "/var/www/html/wordpress"
+              command: !Sub |
+                sed -i 's/password_here/${DatabasePassword}/g' wp-config.php
+  S3:
+    Type: "AWS::S3::Bucket"
+
+
+
+
+
+
+
+
+
+
+
+
+      SecurityGroupIds: !Ref EC2SecurityGroupId
+      SubnetId: !Ref EC2SubnetId
+      Tags:
+        - Key: Name
+          Value: MyEC2
+  S3:
+    Type: "AWS::S3::Bucket"
