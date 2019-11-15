@@ -127,6 +127,12 @@ Resources:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
       InstanceType: !FindInMap [InstanceSize, !Ref EnvironmentSize, EC2]
       KeyName: !Ref EC2KeyPair
+      SecurityGroupIds: !Ref EC2SecurityGroupId
+      SubnetId: !Ref EC2SubnetId
+      Tags:
+        - Key: Name
+          Value: MyEC2
+  S3:
       UserData:
         "Fn::Base64": # The intrinsic function converts an input string to Base64 and passes the commands to EC2.
           !Sub | # pipe allows you to use multi line strings
@@ -134,12 +140,10 @@ Resources:
             yum update -y aws-cfn-bootstrap
             # update aws cfn bootstrap package which contains utilities to bootstrap an instance using 
             # cfninit and cfnhup processes. Always a best practice to update it as step1
-            
             /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2 --configsets wordpress --region ${AWS::Region}
             # cfn-init runs configsets wordpress on EC2 resource in the stack and region as mentioned
             # It will poll the metadata for the resource.
             # Will implement the desired state on the resource defined by the metadata and it will exit by success or failure stat
-
             yum -y update
       Metadata:
         AWS::Cloudformation::Init:
@@ -226,24 +230,5 @@ Resources:
               cwd: "/var/www/html/wordpress"
               command: !Sub |
                 sed -i 's/password_here/${DatabasePassword}/g' wp-config.php
-  S3:
-    Type: "AWS::S3::Bucket"
-
-
-
-
-
-
-
-
-
-
-
-
-      SecurityGroupIds: !Ref EC2SecurityGroupId
-      SubnetId: !Ref EC2SubnetId
-      Tags:
-        - Key: Name
-          Value: MyEC2
   S3:
     Type: "AWS::S3::Bucket"
